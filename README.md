@@ -1,0 +1,2 @@
+# Analisis-Diskriminan-dan-Regresi-Logistik-Multinomial-pada-Dataset-Palmer-Archipelago-Penguins
+Implementasi dan perbandingan tiga metode klasifikasi statistik — Linear Discriminant Analysis (LDA), Quadratic Discriminant Analysis (QDA), dan Regresi Logistik Multinomial — untuk mengklasifikasikan tiga spesies penguin (Adelie, Chinstrap, Gentoo) berdasarkan karakteristik morfologi dari dataset Palmer Archipelago.
