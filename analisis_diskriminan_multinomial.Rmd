@@ -1,0 +1,888 @@
+---
+title: "Analisis Diskriminan & Regresi Logistik Multinomial"
+subtitle: "Implementasi dengan Dataset Palmer Penguins"
+author: "Lintang Isa Mardani (24031554104), Ivan Cahya Aryasuta (24031554172), Rizqi Wahyu Gusniadi (24031554203)"
+date: "`r format(Sys.Date(), '%d %B %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    theme: flatly
+    highlight: tango
+    code_folding: show
+    df_print: paged
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+# Buat folder output visualisasi jika belum ada
+dir.create("hasil_visualisasi", showWarnings = FALSE)
+
+knitr::opts_chunk$set(
+  echo       = TRUE,
+  warning    = FALSE,
+  message    = FALSE,
+  fig.align  = "center",
+  fig.width  = 8,
+  fig.height = 5,
+  fig.path   = "hasil_visualisasi/",
+  dev        = "png",
+  dpi        = 150
+)
+```
+
+# Persiapan
+
+## Load Package
+
+```{r load-packages}
+# install.packages(c("MASS", "nnet", "ggplot2", "dplyr", "caret",
+#                    "knitr", "kableExtra", "corrplot", "tidyr", "car"))
+
+library(MASS)
+library(nnet)
+library(ggplot2)
+library(dplyr)
+library(caret)
+library(knitr)
+library(kableExtra)
+library(corrplot)
+library(tidyr)
+library(car)
+```
+
+## Load & Preprocessing Data
+
+```{r load-data}
+penguins_raw <- read.csv("penguins_size.csv", stringsAsFactors = FALSE)
+str(penguins_raw)
+```
+
+```{r preprocessing}
+penguins <- penguins_raw %>%
+  mutate(across(everything(), ~ifelse(. %in% c("NA", ".", ""), NA, .))) %>%
+  mutate(
+    culmen_length_mm  = as.numeric(culmen_length_mm),
+    culmen_depth_mm   = as.numeric(culmen_depth_mm),
+    flipper_length_mm = as.numeric(flipper_length_mm),
+    body_mass_g       = as.numeric(body_mass_g),
+    species = as.factor(species),
+    island  = as.factor(island),
+    sex     = as.factor(toupper(sex))
+  ) %>%
+  na.omit()
+
+cat("Dimensi data setelah cleaning:", nrow(penguins), "x", ncol(penguins), "\n")
+cat("Distribusi spesies:\n")
+print(table(penguins$species))
+```
+
+# Statistika Deskriptif
+
+```{r deskriptif-tabel}
+desc_stats <- penguins %>%
+  group_by(species) %>%
+  summarise(
+    n               = n(),
+    culmen_len_mean = round(mean(culmen_length_mm), 2),
+    culmen_dep_mean = round(mean(culmen_depth_mm), 2),
+    flipper_mean    = round(mean(flipper_length_mm), 2),
+    mass_mean       = round(mean(body_mass_g), 1)
+  )
+
+kable(desc_stats,
+      col.names = c("Spesies", "n", "Culmen Length (mm)",
+                    "Culmen Depth (mm)", "Flipper Length (mm)", "Body Mass (g)"),
+      caption = "Tabel 1. Rata-rata Variabel Prediktor per Spesies") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                full_width = FALSE)
+```
+
+```{r plot-distribusi, fig.height=7}
+penguins_long <- penguins %>%
+  select(species, culmen_length_mm, culmen_depth_mm, flipper_length_mm, body_mass_g) %>%
+  pivot_longer(-species, names_to = "variable", values_to = "value") %>%
+  mutate(variable = case_when(
+    variable == "culmen_length_mm"  ~ "Culmen Length (mm)",
+    variable == "culmen_depth_mm"   ~ "Culmen Depth (mm)",
+    variable == "flipper_length_mm" ~ "Flipper Length (mm)",
+    variable == "body_mass_g"       ~ "Body Mass (g)",
+    TRUE ~ variable
+  ))
+
+ggplot(penguins_long, aes(x = species, y = value, fill = species)) +
+  geom_boxplot(alpha = 0.7, outlier.shape = 21) +
+  facet_wrap(~variable, scales = "free_y", ncol = 2) +
+  scale_fill_manual(values = c("#FF6B6B", "#4ECDC4", "#45B7D1")) +
+  labs(title = "Gambar 1. Distribusi Variabel Prediktor per Spesies",
+       x = "Spesies", y = "Nilai", fill = "Spesies") +
+  theme_bw() +
+  theme(legend.position = "bottom",
+        strip.background = element_rect(fill = "#2C3E50"),
+        strip.text = element_text(color = "white", face = "bold"))
+```
+
+```{r scatter-plot}
+ggplot(penguins, aes(x = culmen_length_mm, y = flipper_length_mm,
+                     color = species, shape = species)) +
+  geom_point(alpha = 0.7, size = 2.5) +
+  scale_color_manual(values = c("#E74C3C", "#27AE60", "#2980B9")) +
+  labs(title = "Gambar 2. Scatter Plot Culmen Length vs Flipper Length",
+       subtitle = "Berdasarkan Spesies Penguin",
+       x = "Culmen Length (mm)", y = "Flipper Length (mm)",
+       color = "Spesies", shape = "Spesies") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+```
+
+```{r korelasi}
+cor_matrix <- cor(penguins %>%
+                    select(culmen_length_mm, culmen_depth_mm,
+                           flipper_length_mm, body_mass_g))
+
+corrplot(cor_matrix, method = "color", type = "upper",
+         addCoef.col = "black", number.cex = 0.8,
+         tl.col = "black", tl.srt = 45,
+         col = colorRampPalette(c("#D73027", "white", "#4575B4"))(200),
+         title = "Gambar 3. Matriks Korelasi Variabel Prediktor",
+         mar = c(0, 0, 2, 0))
+```
+
+# Analisis Diskriminan
+
+## Uji Asumsi
+
+### Uji Normalitas (Shapiro-Wilk)
+
+```{r uji-normalitas}
+vars       <- c("culmen_length_mm", "culmen_depth_mm", "flipper_length_mm", "body_mass_g")
+var_labels <- c("Culmen Length", "Culmen Depth", "Flipper Length", "Body Mass")
+
+normalitas_result <- data.frame()
+for (sp in levels(penguins$species)) {
+  for (i in seq_along(vars)) {
+    x  <- penguins %>% filter(species == sp) %>% pull(vars[i])
+    sw <- shapiro.test(x)
+    normalitas_result <- rbind(normalitas_result, data.frame(
+      Spesies    = sp,
+      Variabel   = var_labels[i],
+      W          = round(sw$statistic, 4),
+      p_value    = round(sw$p.value, 4),
+      Kesimpulan = ifelse(sw$p.value > 0.05, "Normal", "Tidak Normal")
+    ))
+  }
+}
+
+kable(normalitas_result, row.names = FALSE,
+      caption = "Tabel 2. Uji Shapiro-Wilk Normalitas per Variabel per Spesies") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed")) %>%
+  row_spec(which(normalitas_result$Kesimpulan == "Tidak Normal"),
+           background = "#FFF3CD")
+```
+
+### Uji Homogenitas Varians (Levene)
+
+```{r uji-homogenitas}
+levene_results <- data.frame()
+for (i in seq_along(vars)) {
+  lev <- car::leveneTest(penguins[[vars[i]]] ~ penguins$species)
+  levene_results <- rbind(levene_results, data.frame(
+    Variabel   = var_labels[i],
+    F_stat     = round(lev$`F value`[1], 4),
+    p_value    = round(lev$`Pr(>F)`[1], 4),
+    Kesimpulan = ifelse(lev$`Pr(>F)`[1] > 0.05, "Homogen", "Tidak Homogen")
+  ))
+}
+
+kable(levene_results, row.names = FALSE,
+      caption = "Tabel 3. Uji Levene Homogenitas Varians per Variabel") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed")) %>%
+  row_spec(which(levene_results$Kesimpulan == "Tidak Homogen"),
+           background = "#FFF3CD")
+```
+
+## Pembagian Data Training dan Testing
+
+```{r split-data}
+set.seed(42)
+train_idx  <- createDataPartition(penguins$species, p = 0.8, list = FALSE)
+train_data <- penguins[train_idx, ]
+test_data  <- penguins[-train_idx, ]
+
+cat("Data training:", nrow(train_data), "observasi\n")
+cat("Data testing :", nrow(test_data), "observasi\n")
+cat("\nDistribusi spesies - Training:\n")
+print(table(train_data$species))
+cat("\nDistribusi spesies - Testing:\n")
+print(table(test_data$species))
+```
+
+## Perhitungan Manual Matriks B dan W
+
+```{r manual-BW}
+pred_vars     <- c("culmen_length_mm", "culmen_depth_mm", "flipper_length_mm", "body_mass_g")
+X_train       <- as.matrix(train_data[, pred_vars])
+species_train <- train_data$species
+species_list  <- levels(species_train)
+g <- length(species_list)
+p <- ncol(X_train)
+n <- nrow(X_train)
+
+x_bar <- colMeans(X_train)
+
+group_means <- sapply(species_list, function(sp) {
+  colMeans(X_train[species_train == sp, ])
+})
+colnames(group_means) <- species_list
+
+cat("=== GRAND MEAN ===\n")
+print(round(x_bar, 3))
+
+cat("\n=== MEAN PER SPESIES ===\n")
+print(round(group_means, 3))
+
+B <- matrix(0, p, p)
+for (sp in species_list) {
+  ni   <- sum(species_train == sp)
+  diff <- group_means[, sp] - x_bar
+  B    <- B + ni * (diff %o% diff)
+}
+
+W <- matrix(0, p, p)
+for (sp in species_list) {
+  Xi     <- X_train[species_train == sp, ]
+  xi_bar <- group_means[, sp]
+  for (j in 1:nrow(Xi)) {
+    diff <- Xi[j, ] - xi_bar
+    W    <- W + (diff %o% diff)
+  }
+}
+
+cat("\n=== MATRIKS BETWEEN-GROUPS (B) ===\n")
+print(round(B, 2))
+
+cat("\n=== MATRIKS WITHIN-GROUPS (W) ===\n")
+print(round(W, 2))
+```
+
+## Eigenvector W⁻¹B
+
+```{r eigenvector}
+W_inv <- solve(W)
+WinvB <- W_inv %*% B
+eig   <- eigen(WinvB)
+
+cat("=== EIGENVALUES W-1B ===\n")
+print(round(Re(eig$values), 6))
+
+eig_vec <- Re(eig$vectors)
+rownames(eig_vec) <- pred_vars
+colnames(eig_vec) <- paste0("LD", 1:p)
+
+cat("\n=== EIGENVECTORS (Koefisien Fungsi Diskriminan) ===\n")
+print(round(eig_vec[, 1:2], 6))
+
+eig_vals     <- Re(eig$values)
+eig_vals_pos <- eig_vals[eig_vals > 1e-10]
+prop_var     <- eig_vals_pos / sum(eig_vals_pos)
+
+cat("\n=== PROPORSI VARIANSI YANG DIJELASKAN ===\n")
+for (i in seq_along(prop_var)) {
+  cat(sprintf("LD%d: %.2f%%\n", i, prop_var[i] * 100))
+}
+```
+
+## Model LDA
+
+```{r lda-model}
+lda_model <- lda(species ~ culmen_length_mm + culmen_depth_mm +
+                              flipper_length_mm + body_mass_g,
+                 data  = train_data,
+                 prior = c(1, 1, 1) / 3)
+
+print(lda_model)
+```
+
+```{r lda-koefisien}
+lda_coef          <- as.data.frame(lda_model$scaling)
+lda_coef$Variabel <- rownames(lda_coef)
+
+kable(lda_coef[, c("Variabel", "LD1", "LD2")],
+      row.names = FALSE, digits = 4,
+      caption = "Tabel 4. Koefisien Linear Discriminant Functions") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+```{r lda-prop-trace}
+prop_trace <- round(lda_model$svd^2 / sum(lda_model$svd^2) * 100, 2)
+cat("Proporsi Variansi:\n")
+cat(sprintf("  LD1: %.2f%%\n", prop_trace[1]))
+cat(sprintf("  LD2: %.2f%%\n", prop_trace[2]))
+cat(sprintf("  Total: %.2f%%\n", sum(prop_trace)))
+```
+
+## Visualisasi Fungsi Diskriminan
+
+```{r plot-lda}
+lda_pred_train <- predict(lda_model, train_data)
+
+lda_df <- data.frame(
+  LD1     = lda_pred_train$x[, 1],
+  LD2     = lda_pred_train$x[, 2],
+  Species = train_data$species
+)
+
+ggplot(lda_df, aes(x = LD1, y = LD2, color = Species, shape = Species)) +
+  geom_point(alpha = 0.75, size = 2.5) +
+  stat_ellipse(aes(fill = Species), geom = "polygon", alpha = 0.1, level = 0.9) +
+  scale_color_manual(values = c("#E74C3C", "#27AE60", "#2980B9")) +
+  scale_fill_manual(values  = c("#E74C3C", "#27AE60", "#2980B9")) +
+  labs(title = "Gambar 4. Proyeksi LDA: LD1 vs LD2",
+       subtitle = sprintf("LD1: %.1f%% | LD2: %.1f%% variansi terjelaskan",
+                          prop_trace[1], prop_trace[2]),
+       x = paste0("LD1 (", prop_trace[1], "%)"),
+       y = paste0("LD2 (", prop_trace[2], "%)")) +
+  theme_bw() +
+  theme(legend.position = "bottom")
+```
+
+```{r plot-ld1-hist, fig.height=4}
+ggplot(lda_df, aes(x = LD1, fill = Species)) +
+  geom_histogram(bins = 25, alpha = 0.6, position = "identity") +
+  scale_fill_manual(values = c("#E74C3C", "#27AE60", "#2980B9")) +
+  labs(title = "Gambar 5. Distribusi Skor LD1 per Spesies",
+       x = "Skor LD1", y = "Frekuensi") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+```
+
+## Posterior Probability & Classification Rule
+
+```{r posterior-prob}
+pred_test <- predict(lda_model, test_data)
+
+posterior_df           <- as.data.frame(round(pred_test$posterior, 4))
+posterior_df$Predicted <- pred_test$class
+posterior_df$Actual    <- test_data$species
+posterior_df$Correct   <- ifelse(posterior_df$Predicted == posterior_df$Actual, "V", "X")
+
+kable(head(posterior_df, 10),
+      caption = "Tabel 5. Posterior Probability (10 Observasi Pertama Test Set)") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+```
+
+## Evaluasi Model LDA
+
+### Confusion Matrix & APER - Training Set
+
+```{r confusion-matrix-train}
+pred_train_class <- predict(lda_model, train_data)$class
+cm_train         <- confusionMatrix(pred_train_class, train_data$species)
+
+cat("=== CONFUSION MATRIX - TRAINING SET ===\n")
+print(cm_train$table)
+
+n_total    <- sum(cm_train$table)
+n_wrong    <- n_total - sum(diag(cm_train$table))
+aper_train <- n_wrong / n_total
+
+cat(sprintf("\nAPER (Training) = %d / %d = %.4f = %.2f%%\n",
+            n_wrong, n_total, aper_train, aper_train * 100))
+cat(sprintf("Akurasi (Training) = %.2f%%\n",
+            cm_train$overall["Accuracy"] * 100))
+```
+
+### Confusion Matrix & APER - Test Set
+
+```{r confusion-matrix-test}
+pred_test_class <- predict(lda_model, test_data)$class
+cm_test         <- confusionMatrix(pred_test_class, test_data$species)
+
+cat("=== CONFUSION MATRIX - TEST SET ===\n")
+print(cm_test$table)
+
+n_total_t <- sum(cm_test$table)
+n_wrong_t <- n_total_t - sum(diag(cm_test$table))
+aper_test <- n_wrong_t / n_total_t
+
+cat(sprintf("\nAPER (Testing) = %d / %d = %.4f = %.2f%%\n",
+            n_wrong_t, n_total_t, aper_test, aper_test * 100))
+cat(sprintf("Akurasi (Testing) = %.2f%%\n",
+            cm_test$overall["Accuracy"] * 100))
+```
+
+```{r confusion-matrix-visual}
+cm_df        <- as.data.frame(cm_test$table)
+names(cm_df) <- c("Predicted", "Actual", "Freq")
+
+ggplot(cm_df, aes(x = Actual, y = Predicted, fill = Freq)) +
+  geom_tile(color = "white", linewidth = 1) +
+  geom_text(aes(label = Freq), size = 8, fontface = "bold") +
+  scale_fill_gradient(low = "#EBF5FB", high = "#1A5276") +
+  labs(title = "Gambar 6. Confusion Matrix LDA - Test Set",
+       x = "Kelas Aktual", y = "Kelas Prediksi", fill = "Frekuensi") +
+  theme_bw() +
+  theme(axis.text  = element_text(size = 12),
+        axis.title = element_text(size = 12, face = "bold"),
+        plot.title = element_text(size = 13, face = "bold"))
+```
+
+```{r lda-metrics}
+metrics_df <- data.frame(
+  Spesies     = levels(test_data$species),
+  Sensitivity = round(cm_test$byClass[, "Sensitivity"], 4),
+  Specificity = round(cm_test$byClass[, "Specificity"], 4),
+  Precision   = round(cm_test$byClass[, "Precision"], 4),
+  F1_Score    = round(cm_test$byClass[, "F1"], 4)
+)
+
+kable(metrics_df, row.names = FALSE,
+      caption = "Tabel 6. Metrik Performa LDA per Kelas (Test Set)") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+### Leave-One-Out Cross Validation (LOO-CV)
+
+```{r loocv}
+lda_cv  <- lda(species ~ culmen_length_mm + culmen_depth_mm +
+                           flipper_length_mm + body_mass_g,
+               data = penguins,
+               CV   = TRUE)
+
+cm_cv   <- table(Actual = penguins$species, Predicted = lda_cv$class)
+aper_cv <- (sum(cm_cv) - sum(diag(cm_cv))) / sum(cm_cv)
+
+cat("=== CONFUSION MATRIX - LOO Cross Validation ===\n")
+print(cm_cv)
+cat(sprintf("\nAPER (LOO-CV)    = %.4f = %.2f%%\n", aper_cv, aper_cv * 100))
+cat(sprintf("Akurasi (LOO-CV) = %.2f%%\n", (1 - aper_cv) * 100))
+```
+
+## QDA (Quadratic Discriminant Analysis)
+
+```{r qda}
+qda_model <- qda(species ~ culmen_length_mm + culmen_depth_mm +
+                               flipper_length_mm + body_mass_g,
+                 data = train_data)
+
+pred_qda <- predict(qda_model, test_data)
+cm_qda   <- confusionMatrix(pred_qda$class, test_data$species)
+aper_qda <- (sum(cm_qda$table) - sum(diag(cm_qda$table))) / sum(cm_qda$table)
+
+cat("=== QDA - CONFUSION MATRIX (Test Set) ===\n")
+print(cm_qda$table)
+cat(sprintf("\nAPER (QDA)    = %.4f = %.2f%%\n", aper_qda, aper_qda * 100))
+cat(sprintf("Akurasi (QDA) = %.2f%%\n", cm_qda$overall["Accuracy"] * 100))
+```
+
+## Perbandingan LDA vs QDA
+
+```{r perbandingan-lda-qda}
+comparison_df <- data.frame(
+  Metode  = c("LDA (Test)", "LDA (LOO-CV)", "QDA (Test)"),
+  APER    = paste0(round(c(aper_test, aper_cv, aper_qda) * 100, 2), "%"),
+  Akurasi = paste0(round(c(1 - aper_test, 1 - aper_cv, 1 - aper_qda) * 100, 2), "%")
+)
+
+kable(comparison_df, row.names = FALSE,
+      caption = "Tabel 7. Perbandingan Performa LDA dan QDA") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+# Regresi Logistik Multinomial
+
+## Uji Asumsi
+
+### Tidak Ada Multikolinieritas (VIF)
+
+```{r vif-check}
+lm_proxy <- lm(as.numeric(species) ~ culmen_length_mm + culmen_depth_mm +
+                 flipper_length_mm + body_mass_g + island + sex,
+               data = train_data)
+
+vif_raw <- car::vif(lm_proxy)
+
+if (is.matrix(vif_raw)) {
+  vif_df <- data.frame(
+    Variabel   = rownames(vif_raw),
+    VIF        = round(vif_raw[, "GVIF^(1/(2*Df))"]^2, 4),
+    Keterangan = ifelse(vif_raw[, "GVIF^(1/(2*Df))"]^2 > 10,
+                        "Multikolinieritas", "Aman")
+  )
+} else {
+  vif_df <- data.frame(
+    Variabel   = names(vif_raw),
+    VIF        = round(as.numeric(vif_raw), 4),
+    Keterangan = ifelse(as.numeric(vif_raw) > 10, "Multikolinieritas", "Aman")
+  )
+}
+
+kable(vif_df, row.names = FALSE,
+      caption = "Tabel 8. Variance Inflation Factor (VIF)") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE) %>%
+  row_spec(which(vif_df$Keterangan == "Multikolinieritas"), background = "#FFF3CD")
+```
+
+### Deteksi Outlier (Mahalanobis Distance)
+
+```{r outlier-check}
+X_all     <- as.matrix(penguins[, pred_vars])
+mah_dist  <- mahalanobis(X_all, colMeans(X_all), cov(X_all))
+threshold <- qchisq(0.999, df = 4)
+n_outlier <- sum(mah_dist > threshold)
+
+penguins$mah_dist <- mah_dist
+
+cat(sprintf("Threshold Mahalanobis (chi-sq df=4, alpha=0.001): %.2f\n", threshold))
+cat(sprintf("Jumlah potensi outlier: %d dari %d observasi (%.1f%%)\n",
+            n_outlier, nrow(penguins), n_outlier / nrow(penguins) * 100))
+
+ggplot(penguins, aes(x = seq_along(mah_dist), y = mah_dist, color = species)) +
+  geom_point(alpha = 0.6) +
+  geom_hline(yintercept = threshold, linetype = "dashed", color = "red", linewidth = 1) +
+  scale_color_manual(values = c("#E74C3C", "#27AE60", "#2980B9")) +
+  labs(title = "Gambar 7. Jarak Mahalanobis untuk Deteksi Outlier",
+       x = "Indeks Observasi", y = "Jarak Mahalanobis", color = "Spesies") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+```
+
+## Persiapan Data Multinomial
+
+```{r prep-multinomial}
+penguins_mn         <- penguins %>% select(-mah_dist)
+penguins_mn$species <- relevel(penguins_mn$species, ref = "Adelie")
+
+set.seed(42)
+train_idx_mn <- createDataPartition(penguins_mn$species, p = 0.8, list = FALSE)
+train_mn     <- penguins_mn[train_idx_mn, ]
+test_mn      <- penguins_mn[-train_idx_mn, ]
+
+cat("Referensi kategori : Adelie\n")
+cat("Kategori lain      : Chinstrap (g1), Gentoo (g2)\n\n")
+cat("Data training:", nrow(train_mn), "\n")
+cat("Data testing :", nrow(test_mn), "\n")
+```
+
+## Model Multinomial
+
+### Model Penuh
+
+```{r model-penuh}
+set.seed(42)
+model_penuh <- multinom(
+  species ~ culmen_length_mm + culmen_depth_mm + flipper_length_mm +
+            body_mass_g + island + sex,
+  data  = train_mn,
+  trace = FALSE,
+  maxit = 500
+)
+
+summary(model_penuh)
+```
+
+### Model Parsimoni
+
+```{r model-parsimoni}
+set.seed(42)
+model_mn <- multinom(
+  species ~ culmen_length_mm + culmen_depth_mm + flipper_length_mm +
+            body_mass_g + island,
+  data  = train_mn,
+  trace = FALSE,
+  maxit = 500
+)
+
+summary(model_mn)
+```
+
+## Uji Signifikansi Parameter
+
+### Uji Serentak (Likelihood Ratio Test)
+
+```{r uji-serentak}
+model_null <- multinom(species ~ 1, data = train_mn, trace = FALSE)
+
+lrt <- anova(model_null, model_mn, test = "Chisq")
+print(lrt)
+
+G_stat    <- deviance(model_null) - deviance(model_mn)
+df_diff   <- length(coef(model_mn)) - length(coef(model_null))
+p_value_G <- pchisq(G_stat, df = df_diff, lower.tail = FALSE)
+
+cat(sprintf("\n=== UJI SERENTAK (LRT) ===\n"))
+cat(sprintf("G2            = %.4f\n", G_stat))
+cat(sprintf("Derajat bebas = %d\n", df_diff))
+cat(sprintf("P-value       = %.6f\n", p_value_G))
+cat(sprintf("chi2(df=%d, alpha=0.05) = %.4f\n", df_diff, qchisq(0.95, df_diff)))
+cat(sprintf("\nKeputusan : %s H0\n", ifelse(p_value_G < 0.05, "TOLAK", "GAGAL TOLAK")))
+cat(sprintf("Kesimpulan: %s\n",
+            ifelse(p_value_G < 0.05,
+                   "Minimal satu prediktor berpengaruh signifikan terhadap model.",
+                   "Tidak ada prediktor yang berpengaruh signifikan.")))
+```
+
+### Uji Parsial (Wald Test)
+
+```{r uji-parsial}
+coef_mn  <- summary(model_mn)$coefficients
+se_mn    <- summary(model_mn)$standard.errors
+z_scores <- coef_mn / se_mn
+p_values <- 2 * pnorm(abs(z_scores), lower.tail = FALSE)
+
+cat("=== KOEFISIEN MODEL LOGIT 1 (Chinstrap vs Adelie) ===\n")
+result_g1 <- data.frame(
+  Variabel = colnames(coef_mn),
+  Beta     = round(coef_mn["Chinstrap", ], 4),
+  SE       = round(se_mn["Chinstrap", ], 4),
+  Wald_Z   = round(z_scores["Chinstrap", ], 4),
+  P_value  = round(p_values["Chinstrap", ], 4),
+  Sig      = ifelse(p_values["Chinstrap", ] < 0.001, "***",
+             ifelse(p_values["Chinstrap", ] < 0.01,  "**",
+             ifelse(p_values["Chinstrap", ] < 0.05,  "*", "ns")))
+)
+print(result_g1)
+
+cat("\n=== KOEFISIEN MODEL LOGIT 2 (Gentoo vs Adelie) ===\n")
+result_g2 <- data.frame(
+  Variabel = colnames(coef_mn),
+  Beta     = round(coef_mn["Gentoo", ], 4),
+  SE       = round(se_mn["Gentoo", ], 4),
+  Wald_Z   = round(z_scores["Gentoo", ], 4),
+  P_value  = round(p_values["Gentoo", ], 4),
+  Sig      = ifelse(p_values["Gentoo", ] < 0.001, "***",
+             ifelse(p_values["Gentoo", ] < 0.01,  "**",
+             ifelse(p_values["Gentoo", ] < 0.05,  "*", "ns")))
+)
+print(result_g2)
+
+cat("\nKeterangan: *** p<0.001  ** p<0.01  * p<0.05  ns = tidak signifikan\n")
+```
+
+```{r tabel-wald}
+wald_all <- rbind(
+  data.frame(Model = "Logit 1 (Chinstrap vs Adelie)", result_g1),
+  data.frame(Model = "Logit 2 (Gentoo vs Adelie)",    result_g2)
+)
+
+kable(wald_all, row.names = FALSE,
+      caption = "Tabel 9. Hasil Uji Wald (Uji Parsial) Model Multinomial") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), font_size = 11) %>%
+  collapse_rows(columns = 1, valign = "middle") %>%
+  row_spec(which(wald_all$Sig %in% c("***", "**", "*")), background = "#EBF5FB")
+```
+
+## Persamaan Model
+
+```{r persamaan-model}
+cat("=== MODEL REGRESI LOGISTIK MULTINOMIAL ===\n\n")
+
+cat("LOGIT 1: ln[P(Chinstrap|x) / P(Adelie|x)] =\n  ")
+cat(sprintf("%.4f", coef_mn["Chinstrap", "(Intercept)"]))
+for (v in colnames(coef_mn)[-1]) {
+  cat(sprintf(" %+.4f*%s", coef_mn["Chinstrap", v], v))
+}
+cat("\n\n")
+
+cat("LOGIT 2: ln[P(Gentoo|x) / P(Adelie|x)] =\n  ")
+cat(sprintf("%.4f", coef_mn["Gentoo", "(Intercept)"]))
+for (v in colnames(coef_mn)[-1]) {
+  cat(sprintf(" %+.4f*%s", coef_mn["Gentoo", v], v))
+}
+cat("\n")
+```
+
+## Odds Ratio
+
+```{r odds-ratio}
+or_mn    <- exp(coef(model_mn))
+ci_lower <- exp(coef(model_mn) - 1.96 * summary(model_mn)$standard.errors)
+ci_upper <- exp(coef(model_mn) + 1.96 * summary(model_mn)$standard.errors)
+
+or_g1 <- data.frame(
+  Variabel = colnames(or_mn),
+  OR       = round(or_mn["Chinstrap", ], 4),
+  CI_Lower = round(ci_lower["Chinstrap", ], 4),
+  CI_Upper = round(ci_upper["Chinstrap", ], 4),
+  P_value  = round(p_values["Chinstrap", ], 4)
+)
+
+or_g2 <- data.frame(
+  Variabel = colnames(or_mn),
+  OR       = round(or_mn["Gentoo", ], 4),
+  CI_Lower = round(ci_lower["Gentoo", ], 4),
+  CI_Upper = round(ci_upper["Gentoo", ], 4),
+  P_value  = round(p_values["Gentoo", ], 4)
+)
+
+cat("=== ODDS RATIO - LOGIT 1 (Chinstrap vs Adelie) ===\n")
+print(or_g1)
+cat("\n=== ODDS RATIO - LOGIT 2 (Gentoo vs Adelie) ===\n")
+print(or_g2)
+```
+
+```{r tabel-or}
+or_combined <- rbind(
+  data.frame(Model = "Chinstrap vs Adelie", or_g1),
+  data.frame(Model = "Gentoo vs Adelie",    or_g2)
+)
+
+kable(or_combined, row.names = FALSE, digits = 4,
+      caption = "Tabel 10. Odds Ratio dengan 95% Confidence Interval") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), font_size = 11) %>%
+  collapse_rows(columns = 1, valign = "middle")
+```
+
+```{r interpretasi-or}
+cat("=== INTERPRETASI ODDS RATIO (variabel numerik, p < 0.05) ===\n\n")
+
+vars_num <- c("culmen_length_mm", "culmen_depth_mm", "flipper_length_mm", "body_mass_g")
+
+for (v in vars_num) {
+  or_val <- or_mn["Chinstrap", v]
+  pv     <- p_values["Chinstrap", v]
+  if (pv < 0.05) {
+    arah <- ifelse(or_val > 1, "meningkat", "menurun")
+    cat(sprintf("[Logit 1 - Chinstrap vs Adelie]\n"))
+    cat(sprintf("  Setiap kenaikan 1 unit %s, peluang Chinstrap vs Adelie\n", v))
+    cat(sprintf("  %s sebesar %.4f kali (OR=%.4f, p=%.4f)\n\n", arah, or_val, or_val, pv))
+  }
+}
+
+for (v in vars_num) {
+  or_val <- or_mn["Gentoo", v]
+  pv     <- p_values["Gentoo", v]
+  if (pv < 0.05) {
+    arah <- ifelse(or_val > 1, "meningkat", "menurun")
+    cat(sprintf("[Logit 2 - Gentoo vs Adelie]\n"))
+    cat(sprintf("  Setiap kenaikan 1 unit %s, peluang Gentoo vs Adelie\n", v))
+    cat(sprintf("  %s sebesar %.4f kali (OR=%.4f, p=%.4f)\n\n", arah, or_val, or_val, pv))
+  }
+}
+```
+
+## Uji Kesesuaian Model (Goodness of Fit)
+
+```{r goodness-of-fit}
+ll_null  <- logLik(model_null)
+ll_model <- logLik(model_mn)
+
+mcfadden_r2   <- as.numeric(1 - (ll_model / ll_null))
+cox_r2        <- as.numeric(1 - exp((2 / nrow(train_mn)) * (ll_null - ll_model)))
+nagelkerke_r2 <- cox_r2 / (1 - exp((2 / nrow(train_mn)) * as.numeric(ll_null)))
+
+cat("=== UJI KESESUAIAN MODEL (Goodness of Fit) ===\n\n")
+cat(sprintf("Log-likelihood (Null)  : %.4f\n", as.numeric(ll_null)))
+cat(sprintf("Log-likelihood (Model) : %.4f\n", as.numeric(ll_model)))
+cat(sprintf("AIC                    : %.4f\n", AIC(model_mn)))
+cat(sprintf("BIC                    : %.4f\n", BIC(model_mn)))
+cat(sprintf("\nMcFadden R2    : %.4f (%.2f%%)\n", mcfadden_r2,   mcfadden_r2   * 100))
+cat(sprintf("Cox & Snell R2 : %.4f (%.2f%%)\n", cox_r2,         cox_r2        * 100))
+cat(sprintf("Nagelkerke R2  : %.4f (%.2f%%)\n", nagelkerke_r2,  nagelkerke_r2 * 100))
+```
+
+```{r deviance-test}
+cat("=== DEVIANCE TEST ===\n")
+cat(sprintf("Null Deviance     : %.4f\n", deviance(model_null)))
+cat(sprintf("Residual Deviance : %.4f\n", deviance(model_mn)))
+cat(sprintf("LR G2             : %.4f\n", deviance(model_null) - deviance(model_mn)))
+cat(sprintf("P-value           : %.6f\n",
+            pchisq(deviance(model_null) - deviance(model_mn),
+                   df = model_mn$edf - 2, lower.tail = FALSE)))
+```
+
+## Evaluasi Model Multinomial
+
+```{r evaluasi-multinomial}
+pred_mn_prob  <- predict(model_mn, test_mn, type = "probs")
+pred_mn_class <- predict(model_mn, test_mn, type = "class")
+
+cm_mn   <- confusionMatrix(factor(pred_mn_class, levels = levels(test_mn$species)),
+                            test_mn$species)
+aper_mn <- (sum(cm_mn$table) - sum(diag(cm_mn$table))) / sum(cm_mn$table)
+
+cat("=== CONFUSION MATRIX - MULTINOMIAL (Test Set) ===\n")
+print(cm_mn$table)
+cat(sprintf("\nAkurasi : %.2f%%\n", cm_mn$overall["Accuracy"] * 100))
+cat(sprintf("APER    : %.4f = %.2f%%\n", aper_mn, aper_mn * 100))
+```
+
+```{r cm-multinomial-visual}
+cm_mn_df        <- as.data.frame(cm_mn$table)
+names(cm_mn_df) <- c("Predicted", "Actual", "Freq")
+
+ggplot(cm_mn_df, aes(x = Actual, y = Predicted, fill = Freq)) +
+  geom_tile(color = "white", linewidth = 1) +
+  geom_text(aes(label = Freq), size = 8, fontface = "bold") +
+  scale_fill_gradient(low = "#FDFEFE", high = "#1E8449") +
+  labs(title = "Gambar 8. Confusion Matrix Multinomial Logistik - Test Set",
+       x = "Kelas Aktual", y = "Kelas Prediksi", fill = "Frekuensi") +
+  theme_bw() +
+  theme(axis.text  = element_text(size = 12),
+        axis.title = element_text(size = 12, face = "bold"),
+        plot.title = element_text(size = 13, face = "bold"))
+```
+
+```{r posterior-multinomial}
+prob_df           <- as.data.frame(round(pred_mn_prob, 4))
+prob_df$Predicted <- pred_mn_class
+prob_df$Actual    <- test_mn$species
+prob_df$Correct   <- ifelse(prob_df$Predicted == prob_df$Actual, "V", "X")
+
+kable(head(prob_df, 10), row.names = FALSE,
+      caption = "Tabel 11. Peluang Prediksi per Kelas - 10 Observasi Pertama (Test Set)") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+```
+
+```{r visualisasi-prob}
+prob_long <- as.data.frame(pred_mn_prob) %>%
+  mutate(Actual = test_mn$species) %>%
+  pivot_longer(c(Adelie, Chinstrap, Gentoo),
+               names_to  = "Pred_Species",
+               values_to = "Probability")
+
+ggplot(prob_long, aes(x = Pred_Species, y = Probability, fill = Pred_Species)) +
+  geom_boxplot(alpha = 0.7) +
+  facet_wrap(~Actual, labeller = label_both) +
+  scale_fill_manual(values = c("#E74C3C", "#27AE60", "#2980B9")) +
+  labs(title = "Gambar 9. Distribusi Probabilitas Prediksi per Kelas Aktual",
+       x = "Spesies Prediksi", y = "Probabilitas") +
+  theme_bw() +
+  theme(legend.position = "none",
+        strip.background = element_rect(fill = "#2C3E50"),
+        strip.text = element_text(color = "white", face = "bold"))
+```
+
+# Perbandingan LDA vs Regresi Logistik Multinomial
+
+```{r perbandingan-final}
+final_comparison <- data.frame(
+  Aspek = c("Metode Estimasi", "Asumsi Distribusi", "Tipe Prediktor",
+            "Interpretasi", "APER Test Set", "Akurasi Test Set", "AIC"),
+  LDA = c(
+    "Matriks B dan W, eigenvector W-1B",
+    "Multivariat Normal, kovarians homogen",
+    "Hanya numerik (interval/rasio)",
+    "Skor LD, cutting score, posterior prob",
+    sprintf("%.2f%%", aper_test * 100),
+    sprintf("%.2f%%", (1 - aper_test) * 100),
+    "-"
+  ),
+  Multinomial_Logistik = c(
+    "Maximum Likelihood (Newton-Raphson)",
+    "Tidak diasumsikan",
+    "Numerik & kategorik",
+    "Koefisien logit, OR, posterior prob",
+    sprintf("%.2f%%", aper_mn * 100),
+    sprintf("%.2f%%", (1 - aper_mn) * 100),
+    sprintf("%.2f", AIC(model_mn))
+  )
+)
+
+kable(final_comparison, row.names = FALSE,
+      col.names = c("Aspek", "LDA", "Multinomial Logistik"),
+      caption = "Tabel 12. Perbandingan LDA vs Regresi Logistik Multinomial") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = TRUE) %>%
+  column_spec(1, bold = TRUE)
+```
