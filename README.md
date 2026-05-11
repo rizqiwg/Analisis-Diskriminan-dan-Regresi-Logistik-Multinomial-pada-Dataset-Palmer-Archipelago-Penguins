@@ -19,7 +19,7 @@ Proyek ini mengimplementasikan dan membandingkan tiga metode klasifikasi statist
 | Rizqi Wahyu Gusniadi | 24031554203 |
 
 **Dosen Pengampu:** Dinda Galuh Guminta
-**Kelas:** 2024A — Program Studi Sains Data, Universitas Negeri Surabaya
+**Kelas:** 2024A — Program Studi S1 Sains Data, Universitas Negeri Surabaya
 
 ---
 
