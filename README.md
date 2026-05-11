@@ -1,6 +1,6 @@
 # Analisis Diskriminan dan Regresi Logistik Multinomial pada Dataset Palmer Archipelago Penguins
 
-> Implementasi LDA, QDA, dan Regresi Logistik Multinomial untuk klasifikasi spesies penguin | Mata Kuliah Analisis Multivariat | Program Studi Sains Data, Universitas Negeri Surabaya
+> Implementasi LDA, QDA, dan Regresi Logistik Multinomial untuk klasifikasi spesies penguin | Mata Kuliah Analisis Multivariat | Program Studi S1 Sains Data, Universitas Negeri Surabaya
 
 ---
 
