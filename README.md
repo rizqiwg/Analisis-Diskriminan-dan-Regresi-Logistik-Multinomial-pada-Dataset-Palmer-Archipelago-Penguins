@@ -18,16 +18,16 @@ Proyek ini mengimplementasikan dan membandingkan tiga metode klasifikasi statist
 | Ivan Cahya Aryasuta | 24031554172 |
 | Rizqi Wahyu Gusniadi | 24031554203 |
 
-**Dosen Pengampu:** Moh. Khoridatul Huda, S.Pd., M.Si., Ph.D.  
+**Dosen Pengampu:** Dinda Galuh Guminta
 **Kelas:** 2024A — Program Studi Sains Data, Universitas Negeri Surabaya
 
 ---
 
 ## Struktur Repositori
+```
 ├── analisis_diskriminan_multinomial.Rmd   # Source code R Markdown
-├── analisis_diskriminan_multinomial.html  # Output laporan HTML
-├── Modul_8Hal_Analisis_Diskriminan_Multinomial.docx  # Laporan Word (8 hal)
-├── figures/
+├── analisis_diskriminan_multinomial.html  # Output HTML
+├── hasil_visualisasi/
 │   ├── plot-distribusi.png
 │   ├── scatter-plot.png
 │   ├── korelasi.png
@@ -38,7 +38,7 @@ Proyek ini mengimplementasikan dan membandingkan tiga metode klasifikasi statist
 │   ├── cm-multinomial.png
 │   └── visualisasi-prob.png
 └── README.md
-
+```
 ---
 
 ## Dataset
@@ -94,7 +94,7 @@ Proyek ini mengimplementasikan dan membandingkan tiga metode klasifikasi statist
 
 ---
 
-## 🛠️ Requirements
+## Requirements
 
 ```r
 # Package yang digunakan
